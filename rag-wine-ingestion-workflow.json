@@ -1,0 +1,191 @@
+{
+  "name": "Wine Knowledge RAG - Data Ingestion",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-800, 0],
+      "id": "schedule-trigger",
+      "name": "Daily Wine Update"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE TABLE IF NOT EXISTS wine_metadata (\n  id SERIAL PRIMARY KEY,\n  wine_id VARCHAR(255) UNIQUE,\n  name VARCHAR(500),\n  producer VARCHAR(255),\n  region VARCHAR(255),\n  vintage INTEGER,\n  grape_variety VARCHAR(255),\n  category VARCHAR(100),\n  price DECIMAL(10,2),\n  stock_quantity INTEGER,\n  alcohol_content DECIMAL(3,1),\n  serving_temp VARCHAR(50),\n  tasting_notes TEXT,\n  food_pairings TEXT,\n  description TEXT,\n  image_url VARCHAR(500),\n  vector_id VARCHAR(255),\n  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-600, 0],
+      "id": "postgres-init",
+      "name": "Initialize PostgreSQL",
+      "credentials": {
+        "postgres": {
+          "id": "postgres-cred",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "product",
+        "operation": "getAll",
+        "options": {
+          "per_page": 100,
+          "status": "publish",
+          "stock_status": "instock"
+        }
+      },
+      "type": "n8n-nodes-base.wooCommerce",
+      "typeVersion": 1,
+      "position": [-400, 0],
+      "id": "woo-fetch",
+      "name": "Fetch Wine Products",
+      "credentials": {
+        "wooCommerceApi": {
+          "id": "woo-cred",
+          "name": "WooCommerce API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process wine data for vectorization\nconst wines = $input.all();\nconst processedWines = [];\n\nfor (const item of wines) {\n  const wine = item.json;\n  \n  // Extract wine attributes from WooCommerce data\n  const attributes = {};\n  if (wine.attributes) {\n    wine.attributes.forEach(attr => {\n      attributes[attr.name.toLowerCase().replace(' ', '_')] = attr.options ? attr.options[0] : '';\n    });\n  }\n  \n  // Parse categories\n  const categories = wine.categories ? wine.categories.map(c => c.name).join(', ') : '';\n  \n  // Create comprehensive text for embedding\n  const embeddingText = `\n    Vino: ${wine.name}\n    Produttore: ${attributes.produttore || 'N/A'}\n    Regione: ${attributes.regione || 'N/A'}\n    Vitigno: ${attributes.vitigno || categories}\n    Annata: ${attributes.annata || 'N/A'}\n    Gradazione: ${attributes.gradazione_alcolica || 'N/A'}%\n    Prezzo: €${wine.price}\n    Categoria: ${categories}\n    Descrizione: ${wine.description || wine.short_description || ''}\n    Note di degustazione: ${attributes.note_degustazione || ''}\n    Abbinamenti: ${attributes.abbinamenti || ''}\n    Temperatura di servizio: ${attributes.temperatura_servizio || '16-18°C'}\n  `.trim();\n  \n  processedWines.push({\n    json: {\n      wine_id: wine.id.toString(),\n      name: wine.name,\n      producer: attributes.produttore || 'Unknown',\n      region: attributes.regione || 'Unknown',\n      vintage: parseInt(attributes.annata) || new Date().getFullYear(),\n      grape_variety: attributes.vitigno || categories,\n      category: categories,\n      price: parseFloat(wine.price) || 0,\n      stock_quantity: wine.stock_quantity || 0,\n      alcohol_content: parseFloat(attributes.gradazione_alcolica) || 13.0,\n      serving_temp: attributes.temperatura_servizio || '16-18°C',\n      tasting_notes: attributes.note_degustazione || '',\n      food_pairings: attributes.abbinamenti || '',\n      description: wine.description || wine.short_description || '',\n      image_url: wine.images?.[0]?.src || '',\n      embedding_text: embeddingText,\n      metadata: {\n        wine_id: wine.id.toString(),\n        name: wine.name,\n        price: parseFloat(wine.price) || 0,\n        category: categories,\n        region: attributes.regione || 'Unknown'\n      }\n    }\n  });\n}\n\nreturn processedWines;",
+        "mode": "runOnceForEachItem"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-200, 0],
+      "id": "process-wines",
+      "name": "Process Wine Data"
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-ada-002",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1,
+      "position": [0, -100],
+      "id": "embeddings",
+      "name": "Generate Embeddings",
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-cred",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "sentence-transformers/all-MiniLM-L6-v2",
+        "options": {
+          "truncate": true
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOllama",
+      "typeVersion": 1,
+      "position": [0, 100],
+      "id": "embeddings-ollama",
+      "name": "Ollama Embeddings (Alternative)",
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollama-cred",
+          "name": "Ollama Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "qdrantCollection": {
+          "mode": "list",
+          "value": "wine_knowledge"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1,
+      "position": [200, 0],
+      "id": "qdrant-store",
+      "name": "Store in Qdrant",
+      "credentials": {
+        "qdrantApi": {
+          "id": "qdrant-cred",
+          "name": "Qdrant Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "wine_metadata",
+        "columns": "wine_id,name,producer,region,vintage,grape_variety,category,price,stock_quantity,alcohol_content,serving_temp,tasting_notes,food_pairings,description,image_url,vector_id",
+        "options": {
+          "outputColumns": "id,wine_id,name"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [400, 0],
+      "id": "postgres-store",
+      "name": "Store Metadata in PostgreSQL",
+      "credentials": {
+        "postgres": {
+          "id": "postgres-cred",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ingest-wines",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-800, 200],
+      "id": "webhook-trigger",
+      "name": "Manual Trigger"
+    }
+  ],
+  "connections": {
+    "Daily Wine Update": {
+      "main": [[{"node": "Initialize PostgreSQL", "type": "main", "index": 0}]]
+    },
+    "Manual Trigger": {
+      "main": [[{"node": "Initialize PostgreSQL", "type": "main", "index": 0}]]
+    },
+    "Initialize PostgreSQL": {
+      "main": [[{"node": "Fetch Wine Products", "type": "main", "index": 0}]]
+    },
+    "Fetch Wine Products": {
+      "main": [[{"node": "Process Wine Data", "type": "main", "index": 0}]]
+    },
+    "Process Wine Data": {
+      "main": [[
+        {"node": "Ollama Embeddings (Alternative)", "type": "main", "index": 0},
+        {"node": "Store Metadata in PostgreSQL", "type": "main", "index": 0}
+      ]]
+    },
+    "Ollama Embeddings (Alternative)": {
+      "ai_embedding": [[{"node": "Store in Qdrant", "type": "ai_embedding", "index": 0}]]
+    },
+    "Store in Qdrant": {
+      "main": [[{"node": "Store Metadata in PostgreSQL", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
