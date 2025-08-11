@@ -100,6 +100,23 @@ services:
       timeout: 10s
       retries: 3
 
+  n8n-mcp:
+    image: ghcr.io/czlonkowski/n8n-mcp:latest
+    container_name: n8n-mcp
+    restart: unless-stopped
+    environment:
+      - MCP_MODE=stdio
+      - LOG_LEVEL=error
+      - DISABLE_CONSOLE_OUTPUT=true
+      - N8N_API_URL=http://n8n:5678
+      - N8N_API_KEY=${N8N_API_KEY:-}
+    networks:
+      - n8n-network
+    depends_on:
+      - n8n
+    profiles:
+      - mcp
+
 networks:
   n8n-network:
     driver: bridge
